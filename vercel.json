@@ -1,13 +1,19 @@
 {
-  "functions": {
-    "api/**/*.py": {
-      "runtime": "python3.11"
-    }
-  },
+  "version": 2,
   "builds": [
     {
-      "src": "api/**/*.py",
-      "use": "@vercel/python"
+      "src": "Dockerfile",
+      "use": "@vercel/docker"
     }
-  ]
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/"
+    }
+  ],
+  "env": {
+    "GROQ_API_KEY": "@groq-api-key",
+    "PORT": "8080"
+  }
 }
