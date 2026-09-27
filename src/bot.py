@@ -67,7 +67,7 @@ def compose(category: dict, merchant: dict, trigger: dict, customer: Optional[di
     user_prompt = _PROMPT_TEMPLATE.format(input_json=input_json)
 
     # Call Groq
-client = Groq(api_key=_API_KEY)
+    client = Groq(api_key=_API_KEY)
 
     # Call Groq LLM (JSON response)
     response = client.chat.completions.create(
