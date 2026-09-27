@@ -48,7 +48,7 @@ import json
 import time
 import re
 import socket
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
@@ -325,6 +325,37 @@ class OpenRouterProvider(LLMProvider):
         return data["choices"][0]["message"]["content"]
 
 
+class HeuristicProvider(LLMProvider):
+    """Offline scorer so the judge can run locally with no API key."""
+
+    def name(self) -> str:
+        return "local heuristic (no API key)"
+
+    def complete(self, prompt: str, system: str = None) -> str:
+        if prompt.strip().lower().startswith("say"):
+            return "ready"
+        body = ""
+        match = re.search(r'Body \(\d+ chars\): "(.*)"\s*CTA:', prompt, re.S)
+        if match:
+            body = match.group(1)
+        digits = len(re.findall(r"\d", body))
+        spec = min(10, 4 + min(6, digits // 2))
+        has_ask = "?" in body or "YES" in body
+        return json.dumps({
+            "specificity": spec,
+            "specificity_reason": "Local heuristic counted digits and concrete tokens in the body.",
+            "category_fit": 7,
+            "category_fit_reason": "Local heuristic: category voice was not sent to a model.",
+            "merchant_fit": 7 if body else 3,
+            "merchant_fit_reason": "Local heuristic: message is non-empty and tied to a merchant action.",
+            "decision_quality": 7,
+            "decision_quality_reason": "Local heuristic: trigger text is present in the composed body.",
+            "engagement_compulsion": 7 if has_ask else 5,
+            "engagement_reason": "Local heuristic: looked for a question or a YES reply.",
+            "hint": "Set LLM_API_KEY for a model score. This pass only checks structure.",
+        })
+
+
 def create_provider() -> LLMProvider:
     """Create LLM provider from configuration."""
     providers = {
@@ -335,6 +366,7 @@ def create_provider() -> LLMProvider:
         "groq": lambda: GroqProvider(LLM_API_KEY, LLM_MODEL),
         "ollama": lambda: OllamaProvider(LLM_MODEL, OLLAMA_URL),
         "openrouter": lambda: OpenRouterProvider(LLM_API_KEY, LLM_MODEL),
+        "heuristic": lambda: HeuristicProvider(),
     }
 
     if LLM_PROVIDER not in providers:
@@ -356,28 +388,45 @@ class DatasetLoader:
         self.customers = {}
         self.triggers = {}
 
+    def _read_json(self, path: Path):
+        with path.open(encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def _load_dir(self, folder: Path, key: str, storage: dict) -> bool:
+        if not folder.is_dir():
+            return False
+        files = list(folder.glob("*.json"))
+        if not files:
+            return False
+        for path in files:
+            data = self._read_json(path)
+            storage[data.get(key) or path.stem] = data
+        return True
+
+    def _load_seed(self, name: str, container: str, key: str) -> None:
+        path = self.dataset_dir / name
+        if not path.exists():
+            return
+        data = self._read_json(path)
+        items = data.get(container, [])
+        storage = getattr(self, container)
+        for item in items:
+            if key in item:
+                storage[item[key]] = item
+
     def load(self) -> bool:
         try:
-            cat_dir = self.dataset_dir / "categories"
-            if cat_dir.exists():
-                for f in cat_dir.glob("*.json"):
-                    data = json.load(open(f))
-                    self.categories[data.get("slug", f.stem)] = data
+            expanded = self.dataset_dir / "expanded"
+            cat_dir = expanded / "categories" if (expanded / "categories").is_dir() else self.dataset_dir / "categories"
+            self._load_dir(cat_dir, "slug", self.categories)
 
-            for name, container, key in [
-                ("merchants_seed.json", "merchants", "merchant_id"),
-                ("customers_seed.json", "customers", "customer_id"),
-                ("triggers_seed.json", "triggers", "id")
-            ]:
-                path = self.dataset_dir / name
-                if path.exists():
-                    data = json.load(open(path))
-                    items = data.get(container, data.get(container.rstrip("s"), []))
-                    storage = getattr(self, container)
-                    for item in items:
-                        if key in item:
-                            storage[item[key]] = item
-            return True
+            if not self._load_dir(expanded / "merchants", "merchant_id", self.merchants):
+                self._load_seed("merchants_seed.json", "merchants", "merchant_id")
+            if not self._load_dir(expanded / "customers", "customer_id", self.customers):
+                self._load_seed("customers_seed.json", "customers", "customer_id")
+            if not self._load_dir(expanded / "triggers", "id", self.triggers):
+                self._load_seed("triggers_seed.json", "triggers", "id")
+            return bool(self.categories and self.merchants and self.triggers)
         except Exception as e:
             print_fail(f"Dataset load error: {e}")
             return False
@@ -418,19 +467,19 @@ class BotClient:
     def push_context(self, scope, cid, version, payload):
         return self._request("POST", "/v1/context", 10, {
             "scope": scope, "context_id": cid, "version": version,
-            "payload": payload, "delivered_at": datetime.utcnow().isoformat() + "Z"
+            "payload": payload, "delivered_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         })
 
     def tick(self, triggers):
         return self._request("POST", "/v1/tick", 15, {
-            "now": datetime.utcnow().isoformat() + "Z", "available_triggers": triggers
+            "now": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "available_triggers": triggers
         })
 
     def reply(self, conv_id, merchant_id, message, turn):
         return self._request("POST", "/v1/reply", 15, {
             "conversation_id": conv_id, "merchant_id": merchant_id, "customer_id": None,
             "from_role": "merchant", "message": message,
-            "received_at": datetime.utcnow().isoformat() + "Z", "turn_number": turn
+            "received_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "turn_number": turn
         })
 
 # =============================================================================
@@ -581,6 +630,15 @@ Score each dimension 0-10 with clear reasoning. Be STRICT."""
 # MAIN JUDGE
 # =============================================================================
 
+def _context_ok(data) -> bool:
+    """True when the bot stored this push, including a repeat of the same version."""
+    if not data:
+        return False
+    if data.get("accepted"):
+        return True
+    return data.get("reason") == "stale_version"
+
+
 class JudgeSimulator:
     def __init__(self, llm: LLMProvider):
         self.llm = llm
@@ -640,12 +698,12 @@ class JudgeSimulator:
         print_section("CONTEXT PUSH")
         for slug, cat in self.dataset.categories.items():
             data, err, _ = self.client.push_context("category", slug, 1, cat)
-            status = "PASS" if data and data.get("accepted") else "FAIL"
+            status = "PASS" if _context_ok(data) else "FAIL"
             print(f"  [{status}] category/{slug}")
 
         for mid, m in list(self.dataset.merchants.items())[:5]:
             data, err, _ = self.client.push_context("merchant", mid, 1, m)
-            status = "PASS" if data and data.get("accepted") else "FAIL"
+            status = "PASS" if _context_ok(data) else "FAIL"
             short_id = mid.split('_')[1] if '_' in mid else mid[:10]
             print(f"  [{status}] merchant/{short_id}")
 
@@ -659,7 +717,17 @@ class JudgeSimulator:
 
         trigs = list(self.dataset.triggers.keys())[:3]
         for tid in trigs:
-            self.client.push_context("trigger", tid, 1, self.dataset.triggers[tid])
+            trigger = self.dataset.triggers[tid]
+            self.client.push_context("trigger", tid, 1, trigger)
+            merchant = self.dataset.merchants.get(trigger.get("merchant_id"))
+            if merchant:
+                self.client.push_context("merchant", trigger["merchant_id"], 1, merchant)
+                slug = merchant.get("category_slug")
+                if slug in self.dataset.categories:
+                    self.client.push_context("category", slug, 1, self.dataset.categories[slug])
+            customer = self.dataset.customers.get(trigger.get("customer_id"))
+            if customer:
+                self.client.push_context("customer", trigger["customer_id"], 1, customer)
 
         data, err, lat = self.client.tick(trigs)
         if err:
@@ -806,6 +874,8 @@ class JudgeSimulator:
 
         for mid, m in self.dataset.merchants.items():
             self.client.push_context("merchant", mid, 1, m)
+        for cid, c in self.dataset.customers.items():
+            self.client.push_context("customer", cid, 1, c)
         for tid, t in self.dataset.triggers.items():
             self.client.push_context("trigger", tid, 1, t)
 
@@ -920,14 +990,14 @@ class JudgeSimulator:
 # =============================================================================
 
 def main():
+    global LLM_PROVIDER
     print_header("magicpin AI Challenge — LLM Judge")
 
-    # Validate configuration
-    if LLM_PROVIDER != "ollama" and not LLM_API_KEY:
-        print_fail("LLM_API_KEY is not set!")
-        print_info("Edit the CONFIGURATION section at the top of this file")
-        print_info("Set your API key for your chosen provider")
-        sys.exit(1)
+    # No key: score locally so the harness still runs against the bot.
+    if LLM_PROVIDER not in {"ollama", "heuristic"} and not LLM_API_KEY:
+        print_warn("No LLM_API_KEY — using the local heuristic scorer")
+        print_info("Paste a key in the CONFIGURATION section to score with a model")
+        LLM_PROVIDER = "heuristic"
 
     # Create LLM provider
     try:

@@ -13,7 +13,6 @@
     }
   ],
   "env": {
-    "GROQ_API_KEY": "@groq-api-key",
     "PORT": "8080"
   }
 }
