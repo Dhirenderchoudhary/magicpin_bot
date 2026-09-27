@@ -24,13 +24,13 @@ Author: magicpin AI Challenge Team
 BOT_URL = "https://magicpin-two.vercel.app"
 
 # Choose your LLM provider: "openai", "anthropic", "gemini", "deepseek", "groq", "ollama", "openrouter"
-LLM_PROVIDER = "groq"
+LLM_PROVIDER = "openai"
 
 # Your API key. Leave empty to read GROQ_API_KEY from .env (that file stays off git).
 LLM_API_KEY = ""
 
 # Model to use (leave empty for default, or specify like "gpt-4o", "claude-3-5-sonnet-20241022", etc.)
-LLM_MODEL = "openai/gpt-oss-120b"
+LLM_MODEL = ""  # <-- Optional: specify model or leave empty for default
 
 # For Ollama only: local server URL
 OLLAMA_URL = "http://localhost:11434"
@@ -256,7 +256,7 @@ class DeepSeekProvider(LLMProvider):
 class GroqProvider(LLMProvider):
     def __init__(self, api_key: str, model: str = ""):
         self.api_key = api_key
-        self.model = model or "openai/gpt-oss-120b"
+        self.model = model or "llama-3.1-70b-versatile"
 
     def name(self) -> str:
         return f"Groq ({self.model})"
@@ -1012,7 +1012,9 @@ def main():
 
     _load_local_env()
     if not LLM_API_KEY:
-        LLM_API_KEY = os.environ.get("GROQ_API_KEY") or os.environ.get("LLM_API_KEY") or ""
+        LLM_API_KEY = os.environ.get("LLM_API_KEY") or ""
+        if LLM_PROVIDER == "groq":
+            LLM_API_KEY = LLM_API_KEY or os.environ.get("GROQ_API_KEY") or ""
 
     # No key: score locally so the harness still runs against the bot.
     if LLM_PROVIDER not in {"ollama", "heuristic"} and not LLM_API_KEY:
