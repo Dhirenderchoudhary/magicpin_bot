@@ -4,6 +4,17 @@ WhatsApp composer for the magicpin Vera challenge. It reads category, merchant, 
 
 Live: [https://magicpin-two.vercel.app](https://magicpin-two.vercel.app)
 
+## Layout
+
+```
+bot.py                  compose() and the FastAPI app
+src/composer.py         one template per trigger kind
+src/main.py             judge endpoints
+submission.jsonl        30 test messages
+dataset/                company seeds; expanded/ is generated and gitignored
+judge_simulator.py      local judge
+```
+
 ## Check the live bot
 
 Open [https://magicpin-two.vercel.app/](https://magicpin-two.vercel.app/) for a short status JSON, or [https://magicpin-two.vercel.app/docs](https://magicpin-two.vercel.app/docs) to send a request from the browser.
