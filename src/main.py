@@ -77,6 +77,17 @@ class ComposeIn(BaseModel):
     customer: Optional[dict[str, Any]] = None
 
 
+@app.get("/")
+def home():
+    return {
+        "status": "ok",
+        "service": "magicpin vera bot",
+        "health": "/v1/healthz",
+        "metadata": "/v1/metadata",
+        "compose": "POST /compose",
+    }
+
+
 @app.get("/v1/healthz")
 def healthz():
     return {
