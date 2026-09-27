@@ -82,13 +82,7 @@ python3 judge_simulator.py
 | `full_evaluation` | Every expanded trigger, then a score per message |
 | `warmup`, `phase2_short`, `auto_reply_hell`, `intent_transition`, `hostile` | One slice |
 
-With no key, the judge still runs and scores structure locally. To score wording with Groq, put the key in `.env` (gitignored):
-
-```bash
-GROQ_API_KEY=gsk_...
-```
-
-`LLM_PROVIDER` is `groq` and `LLM_MODEL` is `openai/gpt-oss-120b`. Leave `LLM_API_KEY` empty in the file. The judge reads `.env` on startup. Do not put this key on Vercel. The bot never reads it.
+The judge is left on Magicpin's default: `LLM_PROVIDER` is `openai` and `LLM_MODEL` is empty, which means `gpt-4o-mini`. With no OpenAI key it scores structure locally. Do not put an API key on Vercel. The bot never reads one.
 
 ## Submission file
 
