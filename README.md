@@ -1,47 +1,106 @@
-# MagicPin AI Challenge — Vera bot
+# Magicpin Vera bot
 
-Deterministic WhatsApp composer for magicpin merchants. It reads the four contexts (category, merchant, trigger, optional customer) and writes a message from facts already in those objects. No API key.
+WhatsApp composer for the magicpin Vera challenge. It reads category, merchant, trigger, and an optional customer, then writes the message from facts already in that JSON. It does not call an LLM to answer, so the deployed app needs no API key.
+
+Live: [https://magicpin-two.vercel.app](https://magicpin-two.vercel.app)
+
+## Check the live bot
+
+Open [https://magicpin-two.vercel.app/](https://magicpin-two.vercel.app/) for a short status JSON, or [https://magicpin-two.vercel.app/docs](https://magicpin-two.vercel.app/docs) to send a request from the browser.
+
+`GET /compose` returns 405. Compose is POST only. In Swagger, open `POST /compose`, paste the four context objects, and execute.
+
+```bash
+curl -s https://magicpin-two.vercel.app/v1/healthz
+curl -s https://magicpin-two.vercel.app/v1/metadata
+```
 
 ## Run locally
 
 ```bash
-cd magicpin_bot
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# sanity check (no server)
 python3 -m src.composer
-
-# 30-line submission file
-python3 dataset/generate_dataset.py --seed-dir dataset --out dataset/expanded
-python3 generate_submission.py
-
-# judge-compatible API on port 8080
 uvicorn src.main:app --host 127.0.0.1 --port 8080
 ```
 
-Endpoints: `GET /v1/healthz`, `GET /v1/metadata`, `POST /v1/context`, `POST /v1/tick`, `POST /v1/reply`, `POST /compose`.
+Then open [http://127.0.0.1:8080/docs](http://127.0.0.1:8080/docs).
 
-In a second terminal, from this same folder:
+`python3 -m src.composer` checks a few fixed cases (research digest, customer recall, auto-reply, a yes, a stop) and does not start the server.
+
+Docker uses the same app:
+
+```bash
+docker build -t magicpin-bot .
+docker run --rm -p 8080:8080 magicpin-bot
+```
+
+## Endpoints
+
+| Method | Path | What it does |
+| --- | --- | --- |
+| GET | `/` | Status and links |
+| GET | `/v1/healthz` | `status`, uptime, how many contexts are stored |
+| GET | `/health` | Same as healthz |
+| GET | `/v1/metadata` | Team name, model, version |
+| POST | `/v1/context` | Store one category, merchant, customer, or trigger. A lower or equal `version` returns 409 `stale_version`. A bad `scope` returns 400. |
+| POST | `/v1/tick` | Compose for `available_triggers` already stored. Cap is 20. A repeated `suppression_key` is skipped. |
+| POST | `/v1/reply` | Next turn. Auto-reply or stop returns `action: end`. A clear yes returns the next step. GST is declined and the topic comes back. |
+| POST | `/compose` | Same composer, but the body carries `category`, `merchant`, `trigger`, and optional `customer`. Nothing is stored. |
+
+`/compose` returns:
+
+```json
+{
+  "body": "...",
+  "cta": "open_ended",
+  "send_as": "vera",
+  "suppression_key": "...",
+  "rationale": "..."
+}
+```
+
+Customer messages use `send_as: merchant_on_behalf`. The first tick on a trigger also fills `template_name` (`vera_{kind}_v1`) and `template_params`.
+
+Context lives in memory on the process. A restart clears it. On Vercel a later `/v1/tick` can miss a context pushed to another instance. `/compose` still works, because the request holds the JSON.
+
+## Judge
+
+`judge_simulator.py` talks to `BOT_URL` (currently the live host). From this folder:
 
 ```bash
 source .venv/bin/activate
 python3 judge_simulator.py
 ```
 
-That checks health, context, auto-reply, a yes, and a stop. For every expanded trigger, set `TEST_SCENARIO = "full_evaluation"` at the top of `judge_simulator.py` and run it again. With no API key the judge scores locally. Paste `LLM_API_KEY` in that file to score with a model.
+`TEST_SCENARIO` at the top of that file:
 
-## Deploy on Vercel
+| Value | What runs |
+| --- | --- |
+| `all` | Health, five categories, five merchants, auto-reply, a yes, a stop |
+| `full_evaluation` | Every expanded trigger, then a score per message |
+| `warmup`, `phase2_short`, `auto_reply_hell`, `intent_transition`, `hostile` | One slice |
 
-The GitHub repo is [Dhirenderchoudhary/Magicpin](https://github.com/Dhirenderchoudhary/Magicpin). Vercel reads `src/main.py`.
+With no key, the judge still runs and scores structure locally. To score wording with Groq, put the key in `.env` (gitignored):
 
-1. Open [vercel.com/new](https://vercel.com/new) and import `Dhirenderchoudhary/Magicpin`.
-2. Leave the framework preset as FastAPI. No environment variables.
-3. Deploy. Open `https://YOUR-APP.vercel.app/` and `https://YOUR-APP.vercel.app/v1/healthz`.
-4. In `judge_simulator.py`, set `BOT_URL` to that host (no path).
+```bash
+GROQ_API_KEY=gsk_...
+```
 
-The bot does not need an API key. Callers send the context JSON and get the message back.
+`LLM_PROVIDER` is `groq` and `LLM_MODEL` is `openai/gpt-oss-120b`. Leave `LLM_API_KEY` empty in the file. The judge reads `.env` on startup. Do not put this key on Vercel. The bot never reads it.
 
-## Approach
+## Submission file
 
-Each `trigger.kind` has its own template. Numbers, dates, offers, and citations are copied from the context. Hindi greeting is used when the merchant (or the customer, on customer-facing sends) prefers Hindi. Auto-replies and "stop" end the thread. "Let's do it" moves straight to the draft.
+Seeds live in `dataset/`. The generator expands them (fixed seed `20260426`):
+
+```bash
+python3 dataset/generate_dataset.py --seed-dir dataset --out dataset/expanded
+python3 generate_submission.py
+```
+
+`generate_submission.py` writes `submission.jsonl` (30 lines). It uses `dataset/expanded` when that folder exists, otherwise the seeds. `dataset/expanded/` is gitignored.
+
+## How a message is chosen
+
+Each `trigger.kind` has its own template. Numbers, dates, offers, and citations are copied from the context. A Hindi greeting is used when the merchant prefers Hindi, or the customer does on a customer send. Dashboard stats stay off customer messages. Auto-replies and "stop" end the thread. A clear yes ("next", "draft", "proceed") goes to the next step and does not ask a new question.
