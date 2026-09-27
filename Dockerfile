@@ -21,7 +21,6 @@ COPY README.md .
 # Use non‑root user
 USER appuser
 
-EXPOSE 8080
-
-# Run the FastAPI app with uvicorn
-CMD ["sh", "-c", "uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
